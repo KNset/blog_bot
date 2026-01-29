@@ -1,8 +1,7 @@
 import logging
-import subprocess
+import argparse
 import sys
-import os
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -20,10 +19,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Constants
-TOKEN = "8455626898:AAE559TsQ1JXsYJqNsEeLuLtuBzyeaHQuHk"
-INITIAL_ADMIN_ID = 1278018722
-DEFAULT_DB = "blog_bot.db"
+# Constants (will be populated from args)
+TOKEN = ""
+INITIAL_ADMIN_ID = 0
+DB_PATH = ""
 
 # States for Add Post Conversation
 TITLE, DESCRIPTION, LINK, CONTENT = range(4)
@@ -31,50 +30,15 @@ TITLE, DESCRIPTION, LINK, CONTENT = range(4)
 # States for Add Admin Conversation
 NEW_ADMIN_ID = range(1)
 
-# States for Add New Bot Conversation
-BOT_TOKEN, BOT_ADMIN_ID = range(2)
-
 # States for Edit Post Conversation
 EDIT_SELECT, EDIT_TITLE, EDIT_DESCRIPTION, EDIT_LINK, EDIT_CONTENT = range(5)
-
-# --- Helper to spawn child bots ---
-def spawn_child_bot(token, admin_id, db_path):
-    """Spawns a new process for the child bot."""
-    try:
-        # Check if db_path is absolute, if not make it absolute
-        if not os.path.isabs(db_path):
-            db_path = os.path.abspath(db_path)
-            
-        cmd = [sys.executable, "child_bot.py", "--token", token, "--admin", str(admin_id), "--db_path", db_path]
-        
-        # Use Popen to run in background
-        # On Windows, creationflags=subprocess.CREATE_NEW_CONSOLE might be useful to see it, 
-        # but for background service, we might want to hide it or just let it run.
-        # We'll just run it.
-        process = subprocess.Popen(cmd, cwd=os.getcwd(), shell=True) 
-        logger.info(f"Started child bot process with PID {process.pid}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to spawn child bot: {e}")
-        return False
-
-def start_existing_bots():
-    """Starts all child bots found in the database."""
-    bots = database.get_all_child_bots()
-    count = 0
-    for bot in bots:
-        # bot: id, token, admin_id, db_path, created_at
-        _, token, admin_id, db_path, _ = bot
-        if spawn_child_bot(token, admin_id, db_path):
-            count += 1
-    logger.info(f"Started {count} existing child bots.")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Starts the bot and shows options based on user role."""
     user = update.effective_user
     user_id = user.id
     
-    if database.is_admin(user_id):
+    if database.is_admin(user_id, db_path=DB_PATH):
         await show_admin_menu(update, context)
     else:
         await show_user_menu(update, context)
@@ -86,10 +50,9 @@ async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         ["Manage Posts"]
     ]
     
-    # Only the initial admin (Super Admin) can see the "Add New Admin" button
+    # Check if user is the Initial Admin for this bot
     if user_id == INITIAL_ADMIN_ID:
         keyboard.append(["Add New Admin"])
-        keyboard.append(["Add New Bot"])
         
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text(
@@ -99,7 +62,7 @@ async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 def get_user_menu_content():
     """Returns the text and reply_markup for the user menu."""
-    posts = database.get_all_posts()
+    posts = database.get_all_posts(db_path=DB_PATH)
     if not posts:
         return "Welcome! There are no blog posts yet. Stay tuned!", None
 
@@ -119,7 +82,7 @@ async def show_user_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def add_post_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    if not database.is_admin(user_id):
+    if not database.is_admin(user_id, db_path=DB_PATH):
         await update.message.reply_text("You are not authorized to perform this action.")
         return ConversationHandler.END
 
@@ -154,7 +117,8 @@ async def received_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         context.user_data['post_title'],
         context.user_data['post_description'],
         context.user_data['post_link'],
-        context.user_data['post_content']
+        context.user_data['post_content'],
+        db_path=DB_PATH
     )
     
     await update.message.reply_text("Blog post created successfully!")
@@ -164,7 +128,7 @@ async def received_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Operation cancelled.")
     user_id = update.effective_user.id
-    if database.is_admin(user_id):
+    if database.is_admin(user_id, db_path=DB_PATH):
         await show_admin_menu(update, context)
     else:
         await show_user_menu(update, context)
@@ -175,13 +139,9 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def add_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     
-    # Check if user is the Super Admin
+    # Check if user is the Initial Admin
     if user_id != INITIAL_ADMIN_ID:
-        await update.message.reply_text("You are not authorized to perform this action. Only the Super Admin can add new admins.")
-        return ConversationHandler.END
-
-    if not database.is_admin(user_id):
-        await update.message.reply_text("You are not authorized to perform this action.")
+        await update.message.reply_text("You are not authorized to perform this action. Only the Initial Admin can add new admins.")
         return ConversationHandler.END
 
     await update.message.reply_text(
@@ -195,7 +155,7 @@ async def add_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def received_admin_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
         new_admin_id = int(update.message.text)
-        if database.add_admin(new_admin_id):
+        if database.add_admin(new_admin_id, db_path=DB_PATH):
             await update.message.reply_text(f"User {new_admin_id} has been added as an admin.")
         else:
             await update.message.reply_text("Failed to add admin. They might already be an admin.")
@@ -206,74 +166,16 @@ async def received_admin_id(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await show_admin_menu(update, context)
     return ConversationHandler.END
 
-# --- Add New Bot Conversation ---
-
-async def add_bot_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = update.effective_user.id
-    if user_id != INITIAL_ADMIN_ID:
-        await update.message.reply_text("You are not authorized to perform this action.")
-        return ConversationHandler.END
-
-    await update.message.reply_text(
-        "Let's create a new <b>Child Bot</b>.\n"
-        "Please enter the <b>Bot Token</b> (from @BotFather):",
-        parse_mode="HTML",
-        reply_markup=ReplyKeyboardRemove()
-    )
-    return BOT_TOKEN
-
-async def received_bot_token(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data['new_bot_token'] = update.message.text
-    await update.message.reply_text(
-        "Got the token. Now please enter the <b>Admin ID</b> for this new bot:\n"
-        "(The user who will manage this bot)",
-        parse_mode="HTML"
-    )
-    return BOT_ADMIN_ID
-
-async def received_bot_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    try:
-        new_bot_admin_id = int(update.message.text)
-        token = context.user_data['new_bot_token']
-        
-        # Create a unique DB path for this bot
-        # Using the token's first part (ID) to ensure uniqueness and validity
-        bot_id_part = token.split(':')[0]
-        child_db_path = f"bot_{bot_id_part}.db"
-        
-        # Save to main DB
-        if database.add_child_bot(token, new_bot_admin_id, child_db_path):
-            # Spawn the process
-            if spawn_child_bot(token, new_bot_admin_id, child_db_path):
-                await update.message.reply_text(
-                    f"<b>Success!</b>\n"
-                    f"New bot has been created and started.\n"
-                    f"Admin ID: {new_bot_admin_id}\n"
-                    f"DB File: {child_db_path}",
-                    parse_mode="HTML"
-                )
-            else:
-                 await update.message.reply_text("Bot recorded in DB but failed to start process. Check logs.")
-        else:
-            await update.message.reply_text("Failed to add bot to database. Token might be duplicate.")
-            
-    except ValueError:
-        await update.message.reply_text("Invalid ID. Please enter a numeric User ID.")
-        return BOT_ADMIN_ID
-
-    await show_admin_menu(update, context)
-    return ConversationHandler.END
-
 # --- Manage Posts Handlers ---
 
 async def manage_posts_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Lists posts with Edit/Delete buttons."""
     user_id = update.effective_user.id
-    if not database.is_admin(user_id):
+    if not database.is_admin(user_id, db_path=DB_PATH):
         await update.message.reply_text("You are not authorized to perform this action.")
         return
 
-    posts = database.get_all_posts()
+    posts = database.get_all_posts(db_path=DB_PATH)
     if not posts:
         await update.message.reply_text("No posts to manage.")
         return
@@ -306,7 +208,7 @@ async def post_action_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if data.startswith("view_post_"):
         _, _, post_id = data.split('_')
         post_id = int(post_id)
-        post = database.get_post(post_id)
+        post = database.get_post(post_id, db_path=DB_PATH)
         
         if not post:
             await query.edit_message_text("This post no longer exists.")
@@ -331,19 +233,12 @@ async def post_action_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     post_id = int(post_id)
 
     if action == "delete":
-        if database.delete_post(post_id):
+        if database.delete_post(post_id, db_path=DB_PATH):
             await query.edit_message_text(f"Post deleted successfully.")
         else:
             await query.edit_message_text("Failed to delete post.")
             
     elif action == "edit":
-        # Start Edit Conversation manually? 
-        # Since CallbackQueryHandler can't directly start a ConversationHandler entry point easily if it's not set up that way.
-        # But we can trigger it if we set up the entry point to accept callback queries.
-        # However, for simplicity, let's just tell the user what to do or use a different approach.
-        # Actually, we can use context.user_data to store the post_id and then transition.
-        # But `edit_post_start` needs to be triggered.
-        # Let's try to make the ConversationHandler accept the callback query as entry point.
         pass # Handled by ConversationHandler entry points
 
 # --- Edit Post Conversation ---
@@ -356,7 +251,7 @@ async def edit_post_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     _, post_id = data.split('_')
     context.user_data['edit_post_id'] = int(post_id)
     
-    post = database.get_post(int(post_id))
+    post = database.get_post(int(post_id), db_path=DB_PATH)
     if not post:
         await query.edit_message_text("Post not found.")
         return ConversationHandler.END
@@ -375,9 +270,7 @@ async def edit_received_title(update: Update, context: ContextTypes.DEFAULT_TYPE
     if text != '.':
         context.user_data['edit_title'] = text
     else:
-        # Fetch original if not changed? 
-        # We need to fetch original again or store it. Let's fetch to be safe.
-        post = database.get_post(context.user_data['edit_post_id'])
+        post = database.get_post(context.user_data['edit_post_id'], db_path=DB_PATH)
         context.user_data['edit_title'] = post[1]
         
     await update.message.reply_text("Enter new <b>Description</b> (or . to keep current):", parse_mode="HTML")
@@ -388,7 +281,7 @@ async def edit_received_description(update: Update, context: ContextTypes.DEFAUL
     if text != '.':
         context.user_data['edit_description'] = text
     else:
-        post = database.get_post(context.user_data['edit_post_id'])
+        post = database.get_post(context.user_data['edit_post_id'], db_path=DB_PATH)
         context.user_data['edit_description'] = post[2]
 
     await update.message.reply_text("Enter new <b>Link</b> (or . to keep current):", parse_mode="HTML")
@@ -399,7 +292,7 @@ async def edit_received_link(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if text != '.':
         context.user_data['edit_link'] = text
     else:
-        post = database.get_post(context.user_data['edit_post_id'])
+        post = database.get_post(context.user_data['edit_post_id'], db_path=DB_PATH)
         context.user_data['edit_link'] = post[3]
 
     await update.message.reply_text("Enter new <b>Content</b> (or . to keep current):", parse_mode="HTML")
@@ -410,7 +303,7 @@ async def edit_received_content(update: Update, context: ContextTypes.DEFAULT_TY
     if text != '.':
         context.user_data['edit_content'] = text
     else:
-        post = database.get_post(context.user_data['edit_post_id'])
+        post = database.get_post(context.user_data['edit_post_id'], db_path=DB_PATH)
         context.user_data['edit_content'] = post[4]
         
     # Update DB
@@ -419,7 +312,8 @@ async def edit_received_content(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data['edit_title'],
         context.user_data['edit_description'],
         context.user_data['edit_link'],
-        context.user_data['edit_content']
+        context.user_data['edit_content'],
+        db_path=DB_PATH
     )
     
     await update.message.reply_text("Post updated successfully!")
@@ -429,15 +323,26 @@ async def edit_received_content(update: Update, context: ContextTypes.DEFAULT_TY
 # --- View Posts Handler (for Admin menu) ---
 async def view_posts_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await show_user_menu(update, context)
-    # If admin, show menu again after listing posts so they don't get stuck
-    if database.is_admin(update.effective_user.id):
+    if database.is_admin(update.effective_user.id, db_path=DB_PATH):
         await show_admin_menu(update, context)
 
 
 def main() -> None:
     """Run the bot."""
+    global TOKEN, INITIAL_ADMIN_ID, DB_PATH
+    
+    parser = argparse.ArgumentParser(description="Run a Child Blog Bot")
+    parser.add_argument("--token", required=True, help="Bot Token")
+    parser.add_argument("--admin", type=int, required=True, help="Initial Admin ID")
+    parser.add_argument("--db_path", required=True, help="Path to SQLite DB")
+    
+    args = parser.parse_args()
+    TOKEN = args.token
+    INITIAL_ADMIN_ID = args.admin
+    DB_PATH = args.db_path
+    
     # Initialize Database
-    database.init_db(INITIAL_ADMIN_ID)
+    database.init_db(INITIAL_ADMIN_ID, db_path=DB_PATH)
     
     # Create the Application
     application = Application.builder().token(TOKEN).build()
@@ -463,16 +368,6 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
-    # Add Bot Conversation
-    add_bot_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^Add New Bot$"), add_bot_start)],
-        states={
-            BOT_TOKEN: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_bot_token)],
-            BOT_ADMIN_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_bot_admin)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-
     # Edit Post Conversation
     edit_post_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(edit_post_start, pattern="^edit_")],
@@ -487,7 +382,6 @@ def main() -> None:
 
     application.add_handler(add_post_conv)
     application.add_handler(add_admin_conv)
-    application.add_handler(add_bot_conv)
     application.add_handler(edit_post_conv)
     
     application.add_handler(MessageHandler(filters.Regex("^Manage Posts$"), manage_posts_handler))
@@ -496,9 +390,7 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.Regex("^View All Posts$"), view_posts_handler))
     application.add_handler(CommandHandler("start", start))
 
-    # Start existing child bots
-    start_existing_bots()
-
+    print(f"Starting bot with token ending in ...{TOKEN[-5:]} and admin {INITIAL_ADMIN_ID} using db {DB_PATH}")
     # Run the bot until the user presses Ctrl-C
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
