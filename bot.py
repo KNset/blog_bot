@@ -218,8 +218,7 @@ async def post_action_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         message = (
             f"<b>{title}</b>\n\n"
             f"<i>{description}</i>\n\n"
-            f"<a href='{link}'>Read More</a>\n"
-            f"Date: {created_at}\n\n"
+            f"<a href='{link}'>Read More</a>\n\n"
             f"{content}"
         )
         
