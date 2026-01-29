@@ -57,11 +57,11 @@ async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         reply_markup=reply_markup
     )
 
-async def show_user_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+def get_user_menu_content():
+    """Returns the text and reply_markup for the user menu."""
     posts = database.get_all_posts()
     if not posts:
-        await update.message.reply_text("Welcome! There are no blog posts yet. Stay tuned!")
-        return
+        return "Welcome! There are no blog posts yet. Stay tuned!", None
 
     keyboard = []
     for post in posts:
@@ -69,7 +69,11 @@ async def show_user_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         keyboard.append([InlineKeyboardButton(title, callback_data=f"view_post_{post_id}")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(f"Welcome! Here are the latest blog posts ({len(posts)}). Click a title to read more:", reply_markup=reply_markup)
+    return f"Welcome! Here are the latest blog posts ({len(posts)}). Click a title to read more:", reply_markup
+
+async def show_user_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text, reply_markup = get_user_menu_content()
+    await update.message.reply_text(text, reply_markup=reply_markup)
 
 # --- Add Post Conversation ---
 
@@ -196,6 +200,11 @@ async def post_action_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     
     data = query.data
     
+    if data == "back_to_list":
+        text, reply_markup = get_user_menu_content()
+        await query.edit_message_text(text, reply_markup=reply_markup)
+        return
+    
     if data.startswith("view_post_"):
         _, _, post_id = data.split('_')
         post_id = int(post_id)
@@ -209,12 +218,16 @@ async def post_action_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         message = (
             f"<b>{title}</b>\n\n"
             f"<i>{description}</i>\n\n"
-            f"{content}\n\n"
             f"<a href='{link}'>Read More</a>\n"
-            f"Date: {created_at}"
+            f"Date: {created_at}\n\n"
+            f"{content}"
         )
-        # Send as a new message so the menu stays
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=message, parse_mode="HTML")
+        
+        # Add Back button
+        keyboard = [[InlineKeyboardButton("« Back to List", callback_data="back_to_list")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(text=message, parse_mode="HTML", reply_markup=reply_markup)
         return
 
     action, post_id = data.split('_')
@@ -370,7 +383,7 @@ def main() -> None:
     application.add_handler(edit_post_conv)
     
     application.add_handler(MessageHandler(filters.Regex("^Manage Posts$"), manage_posts_handler))
-    application.add_handler(CallbackQueryHandler(post_action_callback, pattern="^delete_|^view_post_"))
+    application.add_handler(CallbackQueryHandler(post_action_callback, pattern="^delete_|^view_post_|^back_to_list$"))
     
     application.add_handler(MessageHandler(filters.Regex("^View All Posts$"), view_posts_handler))
     application.add_handler(CommandHandler("start", start))
