@@ -1,11 +1,12 @@
 import logging
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
     ConversationHandler,
     MessageHandler,
+    CallbackQueryHandler,
     filters,
 )
 import database
@@ -26,6 +27,9 @@ TITLE, DESCRIPTION, LINK, CONTENT = range(4)
 # States for Add Admin Conversation
 NEW_ADMIN_ID = range(1)
 
+# States for Edit Post Conversation
+EDIT_SELECT, EDIT_TITLE, EDIT_DESCRIPTION, EDIT_LINK, EDIT_CONTENT = range(5)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Starts the bot and shows options based on user role."""
     user = update.effective_user
@@ -39,7 +43,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     keyboard = [
-        ["Add New Post", "View All Posts"]
+        ["Add New Post", "View All Posts"],
+        ["Manage Posts"]
     ]
     
     # Only the initial admin (Super Admin) can see the "Add New Admin" button
@@ -60,7 +65,8 @@ async def show_user_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     await update.message.reply_text(f"Welcome! Here are the latest blog posts ({len(posts)}):")
     for post in posts:
-        title, description, link, content, created_at = post
+        # Update unpacking to handle ID
+        post_id, title, description, link, content, created_at = post
         message = (
             f"<b>{title}</b>\n\n"
             f"<i>{description}</i>\n\n"
@@ -161,6 +167,138 @@ async def received_admin_id(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await show_admin_menu(update, context)
     return ConversationHandler.END
 
+# --- Manage Posts Handlers ---
+
+async def manage_posts_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Lists posts with Edit/Delete buttons."""
+    user_id = update.effective_user.id
+    if not database.is_admin(user_id):
+        await update.message.reply_text("You are not authorized to perform this action.")
+        return
+
+    posts = database.get_all_posts()
+    if not posts:
+        await update.message.reply_text("No posts to manage.")
+        return
+
+    await update.message.reply_text("Select a post to manage:")
+    
+    for post in posts:
+        post_id, title, description, link, content, created_at = post
+        keyboard = [
+            [
+                InlineKeyboardButton("Edit", callback_data=f"edit_{post_id}"),
+                InlineKeyboardButton("Delete", callback_data=f"delete_{post_id}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(f"<b>{title}</b>\n{created_at}", reply_markup=reply_markup, parse_mode="HTML")
+
+async def post_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles Edit and Delete button clicks."""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    action, post_id = data.split('_')
+    post_id = int(post_id)
+
+    if action == "delete":
+        if database.delete_post(post_id):
+            await query.edit_message_text(f"Post deleted successfully.")
+        else:
+            await query.edit_message_text("Failed to delete post.")
+            
+    elif action == "edit":
+        # Start Edit Conversation manually? 
+        # Since CallbackQueryHandler can't directly start a ConversationHandler entry point easily if it's not set up that way.
+        # But we can trigger it if we set up the entry point to accept callback queries.
+        # However, for simplicity, let's just tell the user what to do or use a different approach.
+        # Actually, we can use context.user_data to store the post_id and then transition.
+        # But `edit_post_start` needs to be triggered.
+        # Let's try to make the ConversationHandler accept the callback query as entry point.
+        pass # Handled by ConversationHandler entry points
+
+# --- Edit Post Conversation ---
+
+async def edit_post_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    _, post_id = data.split('_')
+    context.user_data['edit_post_id'] = int(post_id)
+    
+    post = database.get_post(int(post_id))
+    if not post:
+        await query.edit_message_text("Post not found.")
+        return ConversationHandler.END
+        
+    post_id, title, description, link, content, created_at = post
+    
+    await query.edit_message_text(
+        f"Editing Post: <b>{title}</b>\n\n"
+        "Please enter the new <b>Title</b> (or send . to keep current):",
+        parse_mode="HTML"
+    )
+    return EDIT_TITLE
+
+async def edit_received_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text
+    if text != '.':
+        context.user_data['edit_title'] = text
+    else:
+        # Fetch original if not changed? 
+        # We need to fetch original again or store it. Let's fetch to be safe.
+        post = database.get_post(context.user_data['edit_post_id'])
+        context.user_data['edit_title'] = post[1]
+        
+    await update.message.reply_text("Enter new <b>Description</b> (or . to keep current):", parse_mode="HTML")
+    return EDIT_DESCRIPTION
+
+async def edit_received_description(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text
+    if text != '.':
+        context.user_data['edit_description'] = text
+    else:
+        post = database.get_post(context.user_data['edit_post_id'])
+        context.user_data['edit_description'] = post[2]
+
+    await update.message.reply_text("Enter new <b>Link</b> (or . to keep current):", parse_mode="HTML")
+    return EDIT_LINK
+
+async def edit_received_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text
+    if text != '.':
+        context.user_data['edit_link'] = text
+    else:
+        post = database.get_post(context.user_data['edit_post_id'])
+        context.user_data['edit_link'] = post[3]
+
+    await update.message.reply_text("Enter new <b>Content</b> (or . to keep current):", parse_mode="HTML")
+    return EDIT_CONTENT
+
+async def edit_received_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text
+    if text != '.':
+        context.user_data['edit_content'] = text
+    else:
+        post = database.get_post(context.user_data['edit_post_id'])
+        context.user_data['edit_content'] = post[4]
+        
+    # Update DB
+    database.update_post(
+        context.user_data['edit_post_id'],
+        context.user_data['edit_title'],
+        context.user_data['edit_description'],
+        context.user_data['edit_link'],
+        context.user_data['edit_content']
+    )
+    
+    await update.message.reply_text("Post updated successfully!")
+    await show_admin_menu(update, context)
+    return ConversationHandler.END
+
 # --- View Posts Handler (for Admin menu) ---
 async def view_posts_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await show_user_menu(update, context)
@@ -198,8 +336,25 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
+    # Edit Post Conversation
+    edit_post_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(edit_post_start, pattern="^edit_")],
+        states={
+            EDIT_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_received_title)],
+            EDIT_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_received_description)],
+            EDIT_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_received_link)],
+            EDIT_CONTENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_received_content)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
     application.add_handler(add_post_conv)
     application.add_handler(add_admin_conv)
+    application.add_handler(edit_post_conv)
+    
+    application.add_handler(MessageHandler(filters.Regex("^Manage Posts$"), manage_posts_handler))
+    application.add_handler(CallbackQueryHandler(post_action_callback, pattern="^delete_"))
+    
     application.add_handler(MessageHandler(filters.Regex("^View All Posts$"), view_posts_handler))
     application.add_handler(CommandHandler("start", start))
 

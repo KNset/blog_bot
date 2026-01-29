@@ -76,7 +76,44 @@ def get_all_posts():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     # Get latest posts first
-    cursor.execute("SELECT title, description, link, content, created_at FROM posts ORDER BY created_at DESC")
+    cursor.execute("SELECT id, title, description, link, content, created_at FROM posts ORDER BY created_at DESC")
     posts = cursor.fetchall()
     conn.close()
     return posts
+
+def get_post(post_id):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, title, description, link, content, created_at FROM posts WHERE id = ?", (post_id,))
+    post = cursor.fetchone()
+    conn.close()
+    return post
+
+def update_post(post_id, title, description, link, content):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "UPDATE posts SET title = ?, description = ?, link = ?, content = ? WHERE id = ?",
+            (title, description, link, content, post_id)
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        logging.error(f"Error updating post: {e}")
+        return False
+    finally:
+        conn.close()
+
+def delete_post(post_id):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM posts WHERE id = ?", (post_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        logging.error(f"Error deleting post: {e}")
+        return False
+    finally:
+        conn.close()
