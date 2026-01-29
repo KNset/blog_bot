@@ -48,10 +48,12 @@ def spawn_child_bot(token, admin_id, db_path):
         cmd = [sys.executable, "child_bot.py", "--token", token, "--admin", str(admin_id), "--db_path", db_path]
         
         # Use Popen to run in background
-        # On Windows, creationflags=subprocess.CREATE_NEW_CONSOLE might be useful to see it, 
-        # but for background service, we might want to hide it or just let it run.
-        # We'll just run it.
-        process = subprocess.Popen(cmd, cwd=os.getcwd(), shell=True) 
+        # We use CREATE_NEW_CONSOLE on Windows to ensure it runs independently and visible
+        creation_flags = 0
+        if sys.platform == "win32":
+            creation_flags = subprocess.CREATE_NEW_CONSOLE
+            
+        process = subprocess.Popen(cmd, cwd=os.getcwd(), creationflags=creation_flags) 
         logger.info(f"Started child bot process with PID {process.pid}")
         return True
     except Exception as e:
