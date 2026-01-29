@@ -63,18 +63,13 @@ async def show_user_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Welcome! There are no blog posts yet. Stay tuned!")
         return
 
-    await update.message.reply_text(f"Welcome! Here are the latest blog posts ({len(posts)}):")
+    keyboard = []
     for post in posts:
-        # Update unpacking to handle ID
         post_id, title, description, link, content, created_at = post
-        message = (
-            f"<b>{title}</b>\n\n"
-            f"<i>{description}</i>\n\n"
-            f"{content}\n\n"
-            f"<a href='{link}'>Read More</a>\n"
-            f"Date: {created_at}"
-        )
-        await update.message.reply_html(message)
+        keyboard.append([InlineKeyboardButton(title, callback_data=f"view_post_{post_id}")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(f"Welcome! Here are the latest blog posts ({len(posts)}). Click a title to read more:", reply_markup=reply_markup)
 
 # --- Add Post Conversation ---
 
@@ -195,11 +190,33 @@ async def manage_posts_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"<b>{title}</b>\n{created_at}", reply_markup=reply_markup, parse_mode="HTML")
 
 async def post_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles Edit and Delete button clicks."""
+    """Handles Edit, Delete, and View Post button clicks."""
     query = update.callback_query
     await query.answer()
     
     data = query.data
+    
+    if data.startswith("view_post_"):
+        _, _, post_id = data.split('_')
+        post_id = int(post_id)
+        post = database.get_post(post_id)
+        
+        if not post:
+            await query.edit_message_text("This post no longer exists.")
+            return
+
+        post_id, title, description, link, content, created_at = post
+        message = (
+            f"<b>{title}</b>\n\n"
+            f"<i>{description}</i>\n\n"
+            f"{content}\n\n"
+            f"<a href='{link}'>Read More</a>\n"
+            f"Date: {created_at}"
+        )
+        # Send as a new message so the menu stays
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=message, parse_mode="HTML")
+        return
+
     action, post_id = data.split('_')
     post_id = int(post_id)
 
@@ -353,7 +370,7 @@ def main() -> None:
     application.add_handler(edit_post_conv)
     
     application.add_handler(MessageHandler(filters.Regex("^Manage Posts$"), manage_posts_handler))
-    application.add_handler(CallbackQueryHandler(post_action_callback, pattern="^delete_"))
+    application.add_handler(CallbackQueryHandler(post_action_callback, pattern="^delete_|^view_post_"))
     
     application.add_handler(MessageHandler(filters.Regex("^View All Posts$"), view_posts_handler))
     application.add_handler(CommandHandler("start", start))
